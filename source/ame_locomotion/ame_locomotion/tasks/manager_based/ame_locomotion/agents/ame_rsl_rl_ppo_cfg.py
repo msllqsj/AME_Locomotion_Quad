@@ -8,12 +8,19 @@ from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
 
 @configclass
+class AMEActorCriticCfg(RslRlPpoActorCriticCfg):
+    """AME encoder options exposed to Isaac Lab and Hydra."""
+
+    attach_global: bool = False
+
+
+@configclass
 class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 10000
     save_interval = 100
     experiment_name = "g1_ame"
-    policy = RslRlPpoActorCriticCfg(
+    policy = AMEActorCriticCfg(
         class_name="ActorCriticEncoder",
         init_noise_std=1.0,
         actor_obs_normalization=False,
