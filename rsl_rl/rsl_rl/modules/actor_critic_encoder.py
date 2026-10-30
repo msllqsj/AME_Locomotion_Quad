@@ -44,6 +44,10 @@ class ActorCriticEncoder(nn.Module):
         self.L, self.W, self.coord_dim = map_scan_dim
         self.cnn_downsample = cnn_downsample
         self.attach_global = attach_global
+        if len(map_scan_dim) != 3 or self.coord_dim != 3 or min(self.L, self.W) <= 0:
+            raise ValueError(f"map_scan_dim must be (positive L, positive W, 3), got {map_scan_dim}")
+        if mha_dim <= 0 or num_heads <= 0 or mha_dim % num_heads:
+            raise ValueError("mha_dim must be positive and divisible by num_heads.")
 
         # Option A: concatenate coordinates to CNN features
         # self.cnn_output_dim = mha_dim - 3  # d-3
@@ -115,6 +119,8 @@ class ActorCriticEncoder(nn.Module):
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
         self.distribution = None
+        # Plain collector, attached by the runner; not part of state_dict.
+        self.diagnostics = None
         Normal.set_default_validate_args(False)
 
     def _build_terrain_encoder(self, actor_proprio_dim, critic_proprio_dim, attach_global):
@@ -154,7 +160,7 @@ class ActorCriticEncoder(nn.Module):
             f"MHA dim={self.mha_dim}, heads={self.num_heads}"
         )
 
-    def _encode_terrain(self, obs):
+    def _encode_terrain(self, obs, diagnostic_role="actor"):
         """Encode terrain/map observations into attention-ready features."""
         # Extract map scan from the tail of observation.
         # Stored order and reshape order differ, so swap W/L in reshape to keep spatial alignment.
@@ -166,11 +172,16 @@ class ActorCriticEncoder(nn.Module):
         height_map = map_scan
 
         height_map = height_map.permute(0, 3, 1, 2)
+        diagnostics = self.diagnostics
+        capture = diagnostics is not None and diagnostics.capture_encoder
+        if capture:
+            diagnostics.forward_role = diagnostic_role
         cnn_features = self.map_cnn(height_map)
+        grid_shape = tuple(cnn_features.shape[-2:])
         if not self.cnn_downsample:
             cnn_features = cnn_features.permute(0, 2, 3, 1).reshape(-1, self.L * self.W, self.cnn_output_dim)
         else:
-            cnn_features = cnn_features.permute(0, 2, 3, 1).reshape(-1, (self.L // 2 + 1) * (self.W // 2 + 1), self.cnn_output_dim)
+            cnn_features = cnn_features.flatten(2).transpose(1, 2)
 
         # # Optional branch: concatenate sampled 3D coordinates with CNN features
         # if not self.cnn_downsample:
@@ -181,7 +192,7 @@ class ActorCriticEncoder(nn.Module):
         #     coords = map_scan[:, ::2, ::2, :].reshape(-1, (self.L // 2 + 1) * (self.W // 2 + 1), self.coord_dim)
         #     local_features = torch.cat([cnn_features, coords], dim=-1)  # [batch, L'*W', mha_dim]
         local_features = cnn_features  # Current setting: use CNN features only as local features
-        
+
         # Extract proprioceptive features (all non-map terms)
         proprio_obs = obs[:, :-self.L * self.W * self.coord_dim]
         if proprio_obs.shape[1] == self.actor_proprio_dim:
@@ -205,7 +216,15 @@ class ActorCriticEncoder(nn.Module):
             query=proprio_embedding,
             key=local_features,
             value=local_features,
+            average_attn_weights=not capture,
         )
+
+        if capture:
+            diagnostics.record_encoder(
+                diagnostic_role, map_scan, local_features, proprio_embedding, mha_output, attention_weights, grid_shape
+            )
+            # Preserve the public play/attention-export interface.
+            attention_weights = attention_weights.mean(dim=1)
 
         mha_output = mha_output.squeeze(1)
         encoded_obs = torch.cat([mha_output, proprio_obs], dim=-1)
@@ -268,7 +287,7 @@ class ActorCriticEncoder(nn.Module):
     def evaluate(self, obs, **kwargs):
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        encoded_obs, _ = self._encode_terrain(critic_obs)
+        encoded_obs, _ = self._encode_terrain(critic_obs, diagnostic_role="critic")
         value = self.critic(encoded_obs)
         if torch.isnan(value).any() or torch.isinf(value).any():
             print(f"Warning: critic value contains NaN or Inf, {value}")

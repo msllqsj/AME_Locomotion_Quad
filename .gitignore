@@ -65,6 +65,7 @@ _build
 datasets
 
 # Tests
+test/
 tests/
 
 # Docker history

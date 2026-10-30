@@ -49,11 +49,11 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
         ),
         "hf_steppingstones": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.2, stone_height_max=0.05, stone_width_range=(0.25, 0.5), stone_distance_range=(0.05, 0.25), platform_width=2.0,
+            proportion=0.2, stone_height_max=0.05, stone_width_range=(0.25, 0.5), stone_distance_range=(0.05, 0.25), platform_width=1.0,
             holes_depth=-2.0, border_width=0.25
         ),
         "hf_gaps": HfConcentricGapTerrainCfg(
-                    proportion=0.2, gap_width_range=(0.1, 0.5), platform_width=2.0, border_width=0.25, gap_depth=-2.0,
+                    proportion=0.2, gap_width_range=(0.1, 0.5), platform_width=1.0, border_width=0.25, gap_depth=-2.0,
                     ground_width_range=(0.5, 0.5), ground_height_max=0.025
         ),
     },

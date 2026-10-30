@@ -114,6 +114,7 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.diagnostics = None
 
     def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
         # create rollout storage
@@ -197,7 +198,7 @@ class PPO:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
         # iterate over batches
-        for (
+        for batch_index, (
             obs_batch,
             actions_batch,
             target_values_batch,
@@ -208,7 +209,10 @@ class PPO:
             old_sigma_batch,
             hid_states_batch,
             masks_batch,
-        ) in generator:
+        ) in enumerate(generator):
+
+            if self.diagnostics is not None:
+                self.diagnostics.begin_minibatch(batch_index)
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
@@ -371,8 +375,24 @@ class PPO:
 
             # Compute the gradients
             # -- For PPO
+            if self.diagnostics is not None:
+                self.diagnostics.before_backward(
+                    surrogate_loss - self.entropy_coef * entropy_batch.mean(),
+                    self.value_loss_coef * value_loss,
+                    loss,
+                    ratio,
+                    returns_batch,
+                    value_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    mu_batch,
+                    sigma_batch,
+                    self.clip_param,
+                )
             self.optimizer.zero_grad()
             loss.backward()
+            if self.diagnostics is not None:
+                self.diagnostics.after_backward()
             # -- For RND
             if self.rnd:
                 self.rnd_optimizer.zero_grad()  # type: ignore
@@ -384,8 +404,12 @@ class PPO:
 
             # Apply the gradients
             # -- For PPO
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            if self.diagnostics is not None:
+                self.diagnostics.record_clipping(grad_norm, self.max_grad_norm)
             self.optimizer.step()
+            if self.diagnostics is not None:
+                self.diagnostics.after_optimizer_step()
             # -- For RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()

@@ -8,8 +8,8 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
-import sys
 import math
+import sys
 
 from isaaclab.app import AppLauncher
 
@@ -18,15 +18,23 @@ import cli_args  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
-parser.add_argument("--save_attention_weights", action="store_true", default=False, help="Save attention weights during play.")
-parser.add_argument("--vis_attention", action="store_true", default=False, help="Visualize attention weights as colored markers (env 0).")
+parser.add_argument(
+    "--save_attention_weights", action="store_true", default=False, help="Save attention weights during play."
+)
+parser.add_argument(
+    "--vis_attention",
+    action="store_true",
+    default=False,
+    help="Visualize attention weights as colored markers (env 0).",
+)
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="AME-G1-29DOF-Play-v0", help="Name of the task.")
+parser.add_argument("--task", type=str, default="AME-Go2-Play-v0", help="Name of the task.")
+parser.add_argument("--max_steps", type=int, default=None, help="Stop playback after this many control steps.")
 parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
@@ -37,8 +45,15 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--manual_headless", action="store_true", default=False, help=f"Manual Headless mode for convenient debug in IDE. \
-                                    Available only when app_launcher has been modified, Otherwise, there is no effect for this parameter.")
+parser.add_argument(
+    "--manual_headless",
+    action="store_true",
+    default=False,
+    help=(
+        f"Manual Headless mode for convenient debug in IDE.                                     Available only when"
+        f" app_launcher has been modified, Otherwise, there is no effect for this parameter."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -59,17 +74,13 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
 import os
 import time
-import torch
-from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-import isaaclab.sim as sim_utils
 from typing import Optional
 
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
-from rsl_rl.utils import PROJ_ROOT_DIR
-
+import gymnasium as gym
+import isaaclab.sim as sim_utils
+import torch
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -77,23 +88,29 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
+
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from rsl_rl.utils import PROJ_ROOT_DIR
+
 try:
-    from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+    from isaaclab_rl.utils.pretrained_checkpoint import (
+        get_published_pretrained_checkpoint,
+    )
 except ModuleNotFoundError as exc:
     if exc.name not in {"isaaclab_rl.utils", "isaaclab_rl.utils.pretrained_checkpoint"}:
         raise
     from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
-from exporter import export_policy_as_jit, export_policy_as_onnx
-
+import ame_locomotion.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
+from ame_utils import validate_ame_config, validate_go2_observations
+from exporter import export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
-
-import ame_locomotion.tasks  # noqa: F401
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -111,6 +128,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    validate_ame_config(env_cfg, agent_cfg)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -149,6 +167,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    validate_go2_observations(env, agent_cfg)
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
@@ -247,7 +266,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         """Visualize attention weights using color and marker size."""
         if attn is None or attn.numel() == 0:
             return
-        
+
         try:
             height_scanner = env.unwrapped.scene["height_scanner"]
             if not hasattr(height_scanner.data, "ray_hits_w"):
@@ -298,7 +317,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 return
 
             selected_hits = selected_hits[valid_mask]
-            attn_vals     = attn_vals[valid_mask]
+            attn_vals = attn_vals[valid_mask]
 
             # Normalize weights to [0, 1]
             attn_norm = (attn_vals - attn_vals.min()) / (attn_vals.max() - attn_vals.min() + 1e-6)
@@ -316,9 +335,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             scales = scale_factors.unsqueeze(1).expand(-1, 3)  # [n_vis, 3]
 
             if timestep % 50 == 0:
-                print(f"[DEBUG] Attn viz: valid={n_vis}, "
-                      f"attn=[{attn_vals.min():.4f}, {attn_vals.max():.4f}], "
-                      f"scale=[{scale_factors.min():.2f}x, {scale_factors.max():.2f}x]")
+                print(
+                    f"[DEBUG] Attn viz: valid={n_vis}, "
+                    f"attn=[{attn_vals.min():.4f}, {attn_vals.max():.4f}], "
+                    f"scale=[{scale_factors.min():.2f}x, {scale_factors.max():.2f}x]"
+                )
 
             orientations = identity_quat.unsqueeze(0).expand(n_vis, -1)
             attention_visualizer.visualize(points, orientations, marker_indices=bins, scales=scales)
@@ -326,58 +347,50 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         except Exception as e:
             print(f"[WARN] Attention terrain viz failed: {e}")
             import traceback
+
             traceback.print_exc()
 
-    if args_cli.save_attention_weights:
-        if args_cli.vis_attention:
-            attention_visualizer = _build_attention_visualizer(env.unwrapped.device)
-        # simulate environment
-        while simulation_app.is_running():
-            start_time = time.time()
-            # run everything in inference mode
-            with torch.inference_mode():
-                # agent stepping
-                actions, attention_weights, *_ = policy(obs)
+    if args_cli.vis_attention:
+        attention_visualizer = _build_attention_visualizer(env.unwrapped.device)
+    step_limit = args_cli.max_steps
+    if step_limit is None and (args_cli.video or args_cli.save_attention_weights):
+        step_limit = args_cli.video_length
+    if step_limit is not None and step_limit <= 0:
+        raise ValueError("--max_steps must be positive.")
+    while simulation_app.is_running():
+        start_time = time.time()
+        with torch.inference_mode():
+            result = policy(obs)
+            if isinstance(result, tuple):
+                actions, attention_weights = result[:2]
+            else:
+                actions, attention_weights = result, None
+            if args_cli.save_attention_weights and attention_weights is not None:
                 attention_weights_list.append(attention_weights.cpu().numpy())
-                if args_cli.vis_attention and attention_visualizer is not None:
-                    _vis_attention_on_terrain(attention_weights, env)
-                # env stepping
-                obs, *_ = env.step(actions)
+            if attention_visualizer is not None and attention_weights is not None:
+                _vis_attention_on_terrain(attention_weights, env)
+            if args_cli.video and timestep == 0:
+                # Initialize the RTX render product and newly created marker
+                # materials before RecordVideo captures its first control step.
+                # Rendering alone does not advance physics or policy history.
+                for _ in range(32):
+                    env.unwrapped.render()
+            obs, *_ = env.step(actions)
+        timestep += 1
+        if step_limit is not None and timestep >= step_limit:
+            break
+        sleep_time = dt - (time.time() - start_time)
+        if args_cli.real_time and sleep_time > 0:
+            time.sleep(sleep_time)
 
-                timestep += 1
-                # Exit the play loop after recording one video
-                if timestep == args_cli.video_length:
-                    break
-            
-            # time delay for real-time playback
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
-    else:
-        while simulation_app.is_running():
-            start_time = time.time()
-            # run everything in inference mode
-            with torch.inference_mode():
-                # agent stepping
-                actions, *_ = policy(obs)
-                # env stepping
-                obs, *_ = env.step(actions)
-            if args_cli.video:
-                timestep += 1
-                # Exit the play loop after recording one video
-                if timestep == args_cli.video_length:
-                    break
-            
-            # time delay for real-time playback
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
-
+    print(f"[INFO] Playback complete: {timestep} control steps.")
     # Save attention weights after simulation
     if len(attention_weights_list) > 0:
         import numpy as np
-        np.save(os.path.join(PROJ_ROOT_DIR, 'attention_weights.npy'), np.array(attention_weights_list))
-        print(f"[INFO] Attention weights saved to attention_weights.npy, shape: {np.array(attention_weights_list).shape}")
+
+        attention_path = os.path.join(log_dir, "attention_weights.npy")
+        np.save(attention_path, np.array(attention_weights_list))
+        print(f"[INFO] Attention weights saved to {attention_path}, shape: {np.array(attention_weights_list).shape}")
 
     # close the simulator
     env.close()

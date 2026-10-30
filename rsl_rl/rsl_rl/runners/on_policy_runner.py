@@ -17,6 +17,7 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config, ActorCriticEncoder
 from rsl_rl.utils import resolve_obs_groups, store_code_state
+from rsl_rl.utils.ame_diagnostics import create_ame_diagnostics
 
 
 class OnPolicyRunner:
@@ -57,10 +58,18 @@ class OnPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+        self.diagnostics = None
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
         self._prepare_logging_writer()
+        if self.writer is not None and self.diagnostics is None:
+            self.diagnostics = create_ame_diagnostics(
+                self.alg.policy, self.cfg.get("diagnostics"), self.env, self.is_distributed
+            )
+            self.alg.diagnostics = self.diagnostics
+            if hasattr(self.alg.policy, "diagnostics"):
+                self.alg.policy.diagnostics = self.diagnostics
 
         # randomize initial episode lengths (for exploration)
         if init_at_random_ep_len:
@@ -96,9 +105,13 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
+            if self.diagnostics is not None:
+                self.diagnostics.begin_iteration(it)
             # Rollout
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
+                    if self.diagnostics is not None:
+                        self.diagnostics.before_step(obs)
                     # Sample actions
                     actions = self.alg.act(obs)
                     # Step the environment
@@ -107,6 +120,8 @@ class OnPolicyRunner:
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # process the step
                     self.alg.process_env_step(obs, rewards, dones, extras)
+                    if self.diagnostics is not None:
+                        self.diagnostics.after_step(dones, extras)
                     # Extract intrinsic rewards (only for logging)
                     intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
                     # book keeping
@@ -160,6 +175,10 @@ class OnPolicyRunner:
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
+                if self.diagnostics is not None:
+                    diagnostic_start = time.perf_counter()
+                    self.diagnostics.write(self.writer)
+                    self.writer.add_scalar("AME/Logging/write_seconds", time.perf_counter() - diagnostic_start, it)
                 # Save model
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))

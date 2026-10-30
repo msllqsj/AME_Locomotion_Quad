@@ -21,7 +21,13 @@ parser.add_argument("--video", action="store_true", default=False, help="Record 
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default='AME-G1-29DOF-v0', help="Name of the task.")
+parser.add_argument("--task", type=str, default="AME-Go2-v0", help="Name of the task.")
+parser.add_argument(
+    "--finetune_from",
+    type=str,
+    default=None,
+    help="Initialize weights from this checkpoint with a fresh optimizer and iteration counter.",
+)
 parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
@@ -32,19 +38,37 @@ parser.add_argument(
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
 
-parser.add_argument("--manual_headless", action="store_true", default=False, help=f"Manual Headless mode for convenient debug in IDE. \
-                                    Available only when app_launcher has been modified, Otherwise, there is no effect for this parameter.")
-parser.add_argument("--manual_debug", action="store_true", default=True, help=f"Debug mode with less env and other settings for quick test.\
-                                    This will create debug_mode attr in args_cli.\
-                                    Available only when app_launcher has been modified, Otherwise, there is no effect for this parameter.")
+parser.add_argument(
+    "--manual_headless",
+    action="store_true",
+    default=False,
+    help=(
+        f"Manual Headless mode for convenient debug in IDE.                                     Available only when"
+        f" app_launcher has been modified, Otherwise, there is no effect for this parameter."
+    ),
+)
+parser.add_argument(
+    "--manual_debug",
+    action="store_true",
+    default=True,
+    help=(
+        f"Debug mode with less env and other settings for quick test.                                    This will"
+        f" create debug_mode attr in args_cli.                                    Available only when app_launcher has"
+        f" been modified, Otherwise, there is no effect for this parameter."
+    ),
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.finetune_from and args_cli.resume:
+    parser.error("--finetune_from and --resume are mutually exclusive.")
+if args_cli.finetune_from and args_cli.checkpoint:
+    parser.error("Use --finetune_from alone for weight initialization; --checkpoint selects a resume checkpoint.")
 
-if hasattr(args_cli, 'debug_mode') and args_cli.debug_mode:
+if hasattr(args_cli, "debug_mode") and args_cli.debug_mode:
     args_cli.num_envs = 16
 
 # always enable cameras to record video
@@ -82,14 +106,19 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 
 """Rest everything follows."""
 
-import gymnasium as gym
 import os
-import torch
 from datetime import datetime
 
+import ame_locomotion.tasks  # noqa: F401
+import gymnasium as gym
+import isaaclab_tasks  # noqa: F401
 import omni
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
-
+import torch
+from ame_utils import (
+    load_training_checkpoint,
+    validate_ame_config,
+    validate_go2_observations,
+)
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -98,15 +127,14 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_yaml  # dump_pickle is unavailable in some Isaac Lab versions.
-
+from isaaclab.utils.io import (
+    dump_yaml,  # dump_pickle is unavailable in some Isaac Lab versions.
+)
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
-
-import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-import ame_locomotion.tasks  # noqa: F401
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -123,6 +151,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+    validate_ame_config(env_cfg, agent_cfg)
+    if args_cli.finetune_from and agent_cfg.resume:
+        raise ValueError("--finetune_from and resume are mutually exclusive.")
+    if getattr(env_cfg, "finetune", False) and not (args_cli.finetune_from or agent_cfg.resume):
+        raise ValueError("Go2 FINETUNE=True requires --finetune_from <stage-1 checkpoint> or --resume.")
+    if args_cli.finetune_from:
+        resume_path = os.path.abspath(os.path.expanduser(args_cli.finetune_from))
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(resume_path)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -140,7 +177,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.seed = seed
 
     # specify directory for logging experiments
-    if hasattr(args_cli, 'debug_mode') and args_cli.debug_mode:
+    if hasattr(args_cli, "debug_mode") and args_cli.debug_mode:
         agent_cfg.experiment_name = "debug"
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
@@ -171,7 +208,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        if args_cli.checkpoint and os.path.isfile(args_cli.checkpoint):
+            resume_path = os.path.abspath(args_cli.checkpoint)
+        else:
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
     if args_cli.video:
@@ -187,6 +227,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    validate_go2_observations(env, agent_cfg)
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
@@ -198,10 +239,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if args_cli.finetune_from or agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        load_training_checkpoint(runner, resume_path, warm_start=bool(args_cli.finetune_from))
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
@@ -213,7 +254,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
     except ImportError:
         print(
-            "dump_pickle is not available in the current version of isaaclab. Skipping dumping .pkl files for configurations."
+            "dump_pickle is not available in the current version of isaaclab. Skipping dumping .pkl files for"
+            " configurations."
         )
 
     # run training

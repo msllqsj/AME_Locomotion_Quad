@@ -22,6 +22,8 @@ repos:
       - id: destroyed-symlinks
       - id: check-added-large-files
         args: ["--maxkb=2000"]  # restrict files more than 2 MB. Should use git-lfs instead.
+        # Required Go2 geometry, shipped as USD like the existing G1 assets.
+        exclude: ^unitree_model/Go2/usd/configuration/go2_description_base\.usd$
       - id: check-yaml
       - id: check-merge-conflict
       - id: check-case-conflict

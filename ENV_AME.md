@@ -1,5 +1,41 @@
 # AME Windows environment
 
+## Go2 AME (2026-10-25)
+
+Use `conda activate env_ame` from the repository root. The existing environment
+and shared Isaac Lab source installation are used without package upgrades.
+The local Isaac Lab checkout reports version 2.3.2 (package `isaaclab==0.54.2`),
+with Isaac Sim 5.1.0, PyTorch 2.7.0+cu128 and local `rsl-rl-lib==3.0.1`.
+
+```powershell
+# Stage 1: go2/stage_cfg.py FINETUNE=False (the delivered default).
+.\run_train.ps1 --logger tensorboard
+
+# Stage 2: edit the same file to FINETUNE=True, then restart.
+.\run_train.ps1 --logger tensorboard --finetune_from <stage1_checkpoint>
+
+# Full-state resume; the stage selector must match the intended environment.
+.\run_train.ps1 --resume --checkpoint <checkpoint>
+
+# Play a Go2 model on the stage selected by the same source constant.
+.\run_play.ps1 --checkpoint <go2_checkpoint>
+.\run_play.ps1 --checkpoint <go2_checkpoint> --headless --video --video_length 100 --save_attention_weights --vis_attention
+
+# Local validation in Git-ignored test/ (sparse checks require FINETUNE=False).
+python -s test/test_go2.py
+python -s test/smoke_go2.py --terrain hf_steppingstones
+python -s test/smoke_go2.py --terrain hf_gaps
+```
+
+The phase selector is
+`source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/go2/stage_cfg.py`.
+Stage 1 already contains the original stepping stones and gaps. See
+[README_ZH.md](README_ZH.md) for usage and [GO2_VALIDATION.md](test/GO2_VALIDATION.md)
+for validation results and artifacts. Existing `pretrained/ame1.pt` and `ame2.pt`
+remain G1 checkpoints.
+
+## Original G1 environment record (2026-10-21)
+
 Configured on 2026-10-21.
 
 - `env_isaaclab`: restored official `rsl-rl-lib==3.1.2`.
