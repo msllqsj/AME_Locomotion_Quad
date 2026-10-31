@@ -26,7 +26,7 @@ python -m pip install -e rsl_rl
 | `True` | 原 AME 微调地形，含桩阵、间隙、石桥和横栏；加入噪声、质量扰动和推扰 | `logs/rsl_rl/go2_ame_finetune` |
 
 两阶段直接复制原仓库地形配置，保留类型、比例、尺寸及难度课程。第一阶段已经包含离散地形；当前不增加仅粗糙地形的阶段。
-两阶段奖励、命令范围与 PPO 默认参数一致。当前实验在通过性奖励基线上仅添加连续地形的持续腾空惩罚。来源和许可证随奖励模块保存。
+两阶段奖励、命令范围与 PPO 默认参数一致。当前纯 RL 实验使用世界水平足滑、连续地形步态和离散地形足高约束。来源和许可证随奖励模块保存。
 
 第一阶段保持 `FINETUNE=False`：
 
@@ -103,45 +103,98 @@ Go2 的阶段开关独立于 G1；G1 继续使用自身配置文件中的 `FINET
 
 ## Go2 奖励与通用地形门控
 
-两阶段默认使用 B 组：恢复 `2026-10-26_18-22-16_without_base-height-peneal`
-的通过性奖励基线，单独添加持续腾空惩罚。此前组合姿态/步态实验暂时关闭，以便归因。
+两阶段共用纯 RL 奖励公式与基础权重，通过外部门控控制风格约束的地形、等级和训练时间。
+这是实验配置，尚未证明能够改善单腿悬空。
+
+快速调权重时，直接修改 `go2/env_cfg.py` 中 `Go2AMEEnvCfg.__post_init__` 的
+`self.rewards.<奖励名>.weight` 分组配置，两个阶段均读取这里的最终值。
+`go2/rewards_cfg.py` 保留函数、参数和默认值；地形门控仍会生效，权重为零表示关闭该项。
 
 | 奖励项 | 连续地形 | 离散地形 |
 |---|---:|---:|
-| 线速度 / 转向跟踪 | 3 / 2 | 3 / 2 |
-| 高度、关节镜像、gait、历史时长方差 | 0 | 0 |
-| 原 robot_lab `feet_slide` | −0.05 | −0.05 |
-| `feet_height_body`，`terrain_mask=all` | −0.5 | −0.5 |
+| 线速度 / 转向跟踪 | 2 / 2 | 2 / 2 |
+| 垂直速度平方 | −1 | −0.25 |
+| 一阶动作变化平方 | −0.01 | −0.01 |
+| 关节位置软限位越限 | −1 | −1 |
+| 高度、关节镜像 | 0 | 0 |
+| 历史腾空/接触时长方差 | −0.1 | −0.1 |
+| `feet_air_time`（落地触发，阈值 0.5 s） | 0.25 | 0.25 |
+| `feet_slide`：接触脚的世界水平速度 | −0.1 | −0.1 |
+| `feet_height_body` | 0 | −0.5 |
+| `feet_gait`，第一阶段等级≤5且迭代<3000 | 0.2 | 0.2 |
 | 非超时终止 | −10 | −10 |
-| `feet_air_time_excess_penalty` | −0.2 | 0 |
+| `feet_air_time_excess_penalty` | −0.1 | −0.1 |
+
+权重参考 **G1 第一阶段最终生效配置**（包含 `__post_init__` 覆盖）及
+[AME 论文表 2 的 ANYmal-D 配置](https://arxiv.org/html/2506.09588v1)：
+线速度跟踪和水平足滑采用 G1 第一阶段的 `2.0`、`−0.1`，垂直速度和关节限位参考论文系数。
+这是适配实验，不是论文复现：G1 跟踪使用 `std=0.25`，Go2 保留 `0.5`；
+论文动作变化使用目标关节角，本项目使用缩放前动作，动作缩放为 `0.25`，
+当前动作变化权重保留 `−0.01`。机械功率也不等同于力矩平方。
+转向跟踪保留 `2`、终止保留 `−10`，不直接引入论文的 `−200` 终止或更强的足滑惩罚。
+gait、持续腾空约束和地形门控保持当前设置；需同时验证逐足参与和离散地形通过性。
+
+`feet_slide` 通过薄封装调用 G1 原有 `mdp.feet_slide`：世界水平足速、历史接触判定（1 N），
+不减去机身速度，没有直立门控。TensorBoard 奖励名称为 `Episode_Reward/feet_slide`；
+之前使用 `feet_slippage` 的日志保留原名称。独立的世界三维 `feet_slippage_3d` 项仍关闭。
+gait 配对为 FL–RR、FR–RL；实现直接用 `std` 除平方时长误差，因此填 `0.1`，不是 `sqrt(0.1)`。
+离散地形足高公式和目标保持原值。
+
+`feet_air_time` 使用 robot_lab 的四足落地公式：
+`sum((last_air_time - 0.5) * first_contact)`，作用于所有地形，要求指令模长大于 0.1
+（含转向）且机身直立时生效。摆动超过 0.5 秒后落地为正，短于该时间落地为负；
+0.5 秒是奖励阈值，不是目标摆动时长。一直悬空但不落地的脚不得分。
+该项不指定对角步态，也不能单独保证四足都参与行走。
 
 持续腾空项使用 `sum(clamp((current_air_time - 0.6) / 0.4, 0, 1)**2)`：
 0.6 秒后开始计罚，1 秒达到上限；要求平移指令大于 0.1 m/s 或转向指令大于 0.2 rad/s，
 至少两脚支撑且机身直立。直接复用接触传感器计时和部分重置。
-历史时长方差及实验步态函数仍保留，默认权重为零。
-本次只调整奖励配置，tracking、足滑公式、地形、网络和 PPO 均不变。
+地形、命令、网络与 PPO 不变，不引入 AMP 或相位输入。
 
-通用门控实现保留。地形名称统一配置在 `env.terrain_masks.continuous_terrain_names`，
-默认包含平地、上下台阶、障碍块、随机粗糙和坡面；持续腾空惩罚不作用于踏石、gap、桩阵、窄桥和横栏。
-已接入的函数支持 `terrain_mask=continuous`、`discrete`、`known`、`all`，`None` 也表示不门控；
-奖励同时需要非零权重才会生效。掩码按课程列分配分类并缓存，重置和等级变化不重建。
-这是环境所属类型门控，gap 中央平台仍属于离散地形。随机连续/离散混合无法分类时，两类门控均关闭；
-纯连续或纯离散生成器仍可分类。若运行时手动修改布局或名单，需调用 `clear_terrain_mask_cache(env)`。
+`Go2AMEEnvCfg.reward_gates` 统一替代旧 `terrain_mask` 参数及模块。
+最终奖励为“原始奖励 × 基础权重 × 总倍率 × 类别倍率 × 等级倍率 × 时间倍率 × dt”；
+原有指令、直立、落地及支撑条件保留在奖励公式内。
 
-两组从相同 checkpoint、相同种子出发，重置优化器；本机单卡请顺序运行：
+- `gait_guidance`：gait、mirror、髋关节偏差；第一阶段所有地形等级≤5且迭代<3000生效，第二阶段关闭。
+- `air_contact`：落地腾空奖励、时长方差、持续腾空惩罚；两阶段所有地形持续启用。
+- `default_style`：其余风格项，以及垂直速度、角速度和姿态约束；默认倍率1。
+  单项覆盖：机身高度仅连续地形、足端高度仅离散地形、垂直速度在离散地形乘0.25（未知类别乘1）。
 
-```powershell
-# B 组：默认奖励，先以 500 次 PPO 更新为检查预算。
-.\run_train.ps1 --finetune_from logs/rsl_rl/go2_ame/2026-10-26_18-22-16_without_base-height-peneal/model_9999.pt --seed 42 --run_name air_excess_B --max_iterations 500
-# A 组：只关闭持续腾空项，其余配置与 B 组一致。
-.\run_train.ps1 --finetune_from logs/rsl_rl/go2_ame/2026-10-26_18-22-16_without_base-height-peneal/model_9999.pt --seed 42 --run_name air_excess_A --max_iterations 500 env.rewards.feet_air_time_excess_penalty.weight=0
+配置集中在 `reward_gates.groups`、`term_groups`、`overrides`。每组支持 `scale`、
+`terrain_scales`、`max_level`、`above_level_scale`、`end_iteration`、`after_iteration_scale`。
+单项未填写字段继承组值，显式 `None` 解除等级/时间限制；类别字典按键合并，具体地形名称优先：
+
+```python
+self.reward_gates.groups["gait_guidance"].max_level = 5
+self.reward_gates.overrides["joint_mirror"] = {"end_iteration": 1500}
 ```
 
-在 0/100/300/500 更新检查逐足接触率、垂直载荷参与、最长腾空、速度误差和固定离散地形通过率；
-500 次只是检查预算，不保证收敛。checkpoint 不会自动恢复旧的环境/奖励设置。
-重启训练后读取新配置；`--finetune_from` 加载权重并重置优化器和迭代，`--resume` 恢复完整训练状态。
-决策依据见 `test/GO2_NEXT_STEP_20261029.md`，本次接入验证见
-`test/AIR_EXCESS_ISOLATED_VALIDATION_20261029.md`。短程检查不能证明三足行走和通过率已改善。
+Hydra 可用 `env.reward_gates.enabled=false` 将所有外部门控倍率设为1；基础权重为零的项仍关闭，
+不会恢复旧掩码。最终配置写入 `env.yaml`，在环境启动时验证，包括零权重项的配置。
+旧 `terrain_mask`/`terrain_masks` 参数不再支持。
+
+连续地形名单位于 `reward_gates.continuous_terrain_names`，默认包含平地、台阶、障碍块、粗糙和坡面。
+分类遵循课程列分配，等级动态读取；gap 起始平台仍属离散地形。随机混合类别标为未知；
+同类混合和单一地形可可靠分类，但随机行号不代表难度等级。纯平面等级为0，未知等级关闭带等级限制的项；
+未知类别关闭两项高度约束。精确地形名称已知时仍可使用名称覆盖。修改布局或配置后重新启动环境。
+
+Runner 在 rollout 前传递日志中的 PPO 迭代编号；恢复训练沿用现有编号语义（保存编号会再次使用），
+权重初始化从0开始，play读取 checkpoint 进度。门控状态不进入模型权重，G1 行为保持原样。
+TensorBoard `RewardGates/<奖励名>/` 记录类别/等级/时间/最终倍率、启用比例、基础/有效权重及
+每秒加权奖励；统计来自最近一次奖励控制步，不是回合平均，`RewardGates/last_control_step` 标明采样步。
+该日志独立于 AME diagnostics 开关；门控和注意力数值本身不能证明运动效果改善。
+
+第一阶段保持 `FINETUNE=False`，本轮建议从头启动：
+
+```powershell
+.\run_train.ps1 --seed 42 --run_name pure_rl_g1_paper
+```
+
+保留旧模型作为对照；固定平地指令 0.3、0.5、0.8 m/s，检查逐足载荷参与、最长腾空、
+对角腿时序和实际速度，并单独评估踏石/gap 通过性。gait 分数提高不代表四足有效承重。
+这是组合实验，不能单独归因到某一个奖励项。
+需要重启进程才能读取新配置；checkpoint 不会自动恢复旧的环境/奖励设置。
+第二阶段仍须提供初始化模型或断点恢复。
 
 ## AME TensorBoard 分模块诊断
 

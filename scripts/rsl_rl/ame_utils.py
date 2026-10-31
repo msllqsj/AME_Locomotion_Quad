@@ -66,4 +66,5 @@ def load_training_checkpoint(runner, path, *, warm_start=False):
         ) from exc
     if warm_start:
         runner.current_learning_iteration = 0
+        runner._set_reward_gate_iteration(0)
     return infos

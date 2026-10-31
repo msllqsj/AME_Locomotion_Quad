@@ -59,6 +59,13 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
         self.diagnostics = None
+        self._set_reward_gate_iteration(0)
+
+    def _set_reward_gate_iteration(self, iteration):
+        """Optional environment-local gates; other tasks retain their existing behavior."""
+        gates = getattr(getattr(self.env, "unwrapped", self.env), "_reward_gates", None)
+        if gates is not None:
+            gates.set_iteration(iteration)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
@@ -105,6 +112,7 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
+            self._set_reward_gate_iteration(it)
             if self.diagnostics is not None:
                 self.diagnostics.begin_iteration(it)
             # Rollout
@@ -175,6 +183,10 @@ class OnPolicyRunner:
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
+                gates = getattr(getattr(self.env, "unwrapped", self.env), "_reward_gates", None)
+                if gates is not None:
+                    for name, value in gates.metrics().items():
+                        self.writer.add_scalar(name, value, it)
                 if self.diagnostics is not None:
                     diagnostic_start = time.perf_counter()
                     self.diagnostics.write(self.writer)
@@ -345,6 +357,7 @@ class OnPolicyRunner:
         # -- load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]
+        self._set_reward_gate_iteration(self.current_learning_iteration)
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):

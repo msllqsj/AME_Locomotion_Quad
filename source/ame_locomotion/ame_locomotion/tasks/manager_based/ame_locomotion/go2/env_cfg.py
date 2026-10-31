@@ -2,6 +2,7 @@
 
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg, ViewerCfg
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
@@ -22,8 +23,8 @@ from ..assets.robots.unitree import UNITREE_GO2_CFG
 from ..terrains.finetune_terrain_cfg import FINETUNE_ROUGH_TERRAINS_CFG
 from ..terrains.terrain_cfg import ROUGH_TERRAINS_CFG
 from . import stage_cfg
+from .reward_gates import RewardGatesCfg, initialize_reward_gates
 from .rewards_cfg import Go2RewardsCfg
-from .terrain_masks import TerrainMaskCfg
 
 
 def joint_entity():
@@ -98,6 +99,11 @@ class Go2ObservationsCfg:
 
 
 @configclass
+class Go2EventCfg(EventCfg):
+    reward_gates = EventTerm(func=initialize_reward_gates, mode="startup")
+
+
+@configclass
 class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
     scene: Go2SceneCfg = Go2SceneCfg(num_envs=1024, env_spacing=2.5)
     observations: Go2ObservationsCfg = Go2ObservationsCfg()
@@ -105,14 +111,15 @@ class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
     commands: CommandsCfg = CommandsCfg()
     rewards: Go2RewardsCfg = Go2RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-    events: EventCfg = EventCfg()
+    events: Go2EventCfg = Go2EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
-    terrain_masks: TerrainMaskCfg = TerrainMaskCfg()
+    reward_gates: RewardGatesCfg = RewardGatesCfg()
     # Saved in env.yaml; source stage_cfg.FINETUNE is the supported selector.
     finetune: bool = False
 
     def __post_init__(self):
         self.finetune = stage_cfg.FINETUNE
+        self.reward_gates.groups["gait_guidance"].scale = 0.0 if self.finetune else 1.0
         terrain = FINETUNE_ROUGH_TERRAINS_CFG if self.finetune else ROUGH_TERRAINS_CFG
         self.scene.terrain.terrain_generator = terrain.copy()
         self.scene.terrain.terrain_generator.curriculum = True
@@ -133,6 +140,39 @@ class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.debug_vis = False
+
+        # Reward weights: override Go2RewardsCfg defaults here for both stages.
+        # -- task: command tracking
+        self.rewards.track_lin_vel_xy_exp.weight = 2.0
+        self.rewards.track_ang_vel_z_exp.weight = 2.0
+
+        # -- regulation: safety, energy and action smoothness
+        self.rewards.is_terminated.weight = -10.0
+        self.rewards.undesired_contacts.weight = -1.0
+        self.rewards.joint_pos_limits.weight = -1.0
+        self.rewards.joint_acc_l2.weight = -2.5e-7
+        self.rewards.joint_power.weight = -2e-5
+        self.rewards.action_rate_l2.weight = -0.01
+        self.rewards.smoothness.weight = -0.01
+        self.rewards.lin_vel_z_l2.weight = -1.0
+        self.rewards.ang_vel_xy_l2.weight = -0.05
+        self.rewards.flat_orientation_l2.weight = -0.2
+
+        # -- gait style: posture, foot contacts and coordination
+        self.rewards.base_height_l2.weight = 0.0
+        self.rewards.joint_deviation_hip_l1.weight = -0.0
+        self.rewards.joint_mirror.weight = 0.0
+        self.rewards.feet_slide.weight = -0.1
+        self.rewards.feet_slippage_3d.weight = 0.0
+        self.rewards.feet_contact_forces.weight = 0.0
+        self.rewards.feet_height_body.weight = -0.5
+        self.rewards.feet_gait.weight = 0.2
+        self.rewards.feet_air_time.weight = 0.25
+        self.rewards.feet_air_time_variance_penalty.weight = -0.1
+        self.rewards.feet_air_time_excess_penalty.weight = -0.1
+        self.rewards.standing_joint_positions.weight = 0.0
+        self.rewards.standing_joint_velocities.weight = 0.0
+
         self.events.physics_material.params.update(
             static_friction_range=(0.3, 1.0), dynamic_friction_range=(0.3, 1.0), restitution_range=(0.0, 0.1)
         )
@@ -178,3 +218,14 @@ class Go2AMEEnvCfg_PLAY(Go2AMEEnvCfg):
         self.events.push_robot = None
         self.events.reset_base.params["pose_range"] = {key: (0.0, 0.0) for key in ("x", "y", "yaw")}
         self.events.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
+
+        # Select one terrain for playback.
+        terrain_name = "hf_gaps"
+        generator = self.scene.terrain.terrain_generator
+        generator.sub_terrains = {terrain_name: generator.sub_terrains[terrain_name].copy()}
+        generator.sub_terrains[terrain_name].proportion = 1.0
+
+        generator.num_rows = 1
+        generator.num_cols = 1
+        generator.curriculum = False
+        generator.difficulty_range = (1.0, 1.0)

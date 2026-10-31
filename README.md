@@ -71,56 +71,121 @@ Go2 uses its own stage selector; the G1 configuration retains its existing
 
 ## Go2 rewards and shared terrain gates
 
-Both stages default to experiment B: the traversal reward baseline from
-`2026-10-26_18-22-16_without_base-height-peneal`, plus one ongoing-air-time penalty.
-The earlier combined posture/gait experiment is disabled for this comparison.
+Both stages share the same pure-RL base weights and formulas. External gates
+control which terrain levels and training iterations receive style constraints.
+These are experimental defaults; improved foot participation is not yet established.
+
+For quick tuning, edit the grouped `self.rewards.<term>.weight` assignments in
+`Go2AMEEnvCfg.__post_init__` (`go2/env_cfg.py`). These set the final weights for
+both stages; `go2/rewards_cfg.py` defines the functions, parameters and defaults.
+Reward gates still apply, and a zero weight disables a term.
 
 | Term | Continuous terrain | Discrete terrain |
 |---|---:|---:|
-| Linear / yaw velocity tracking | 3 / 2 | 3 / 2 |
-| `base_height_l2`, `joint_mirror`, `feet_gait`, historical timing variance | 0 | 0 |
-| Original robot_lab `feet_slide` | −0.05 | −0.05 |
-| `feet_height_body` (`terrain_mask=all`) | −0.5 | −0.5 |
-| Non-timeout termination | −10 | −10 |
-| `feet_air_time_excess_penalty` | −0.2 | 0 |
+| Linear / yaw velocity tracking | 2 / 2 | 2 / 2 |
+| Vertical velocity squared | -1 | -0.25 |
+| Action rate squared | -0.01 | -0.01 |
+| Joint position soft-limit excess | -1 | -1 |
+| `base_height_l2`, `joint_mirror` | 0 | 0 |
+| Historical air/contact-time variance | -0.1 | -0.1 |
+| `feet_air_time` (touchdown, threshold 0.5 s) | 0.25 | 0.25 |
+| `feet_slide`: world horizontal foot speed while in contact | -0.1 | -0.1 |
+| `feet_height_body` | 0 | -0.5 |
+| `feet_gait` (stage 1, level <=5 and iteration <3000) | 0.2 | 0.2 |
+| Non-timeout termination | -10 | -10 |
+| `feet_air_time_excess_penalty` | -0.1 | -0.1 |
+
+The weights draw on the **effective G1 stage-1 configuration** (including its
+post-init overrides) and [AME Table 2, ANYmal-D](https://arxiv.org/html/2506.09588v1).
+Linear tracking and horizontal slip use G1 stage 1's 2.0 and -0.1; vertical velocity
+and joint limits use the paper's coefficient magnitudes. This is
+an adapted experiment, not a reproduction: G1 tracking uses `std=0.25` versus
+Go2's 0.5, and the paper's action-rate term uses desired joint angles while
+this implementation uses actions before the 0.25 scale and retains a -0.01
+action-rate weight. Mechanical power is also distinct from squared torque.
+Yaw tracking stays at 2 and termination at -10; the paper's -200 termination
+and stronger slip penalty are not transferred. Gait, airborne-foot constraints
+and terrain gates retain their current settings. Improvement must be checked
+against both per-foot participation and sparse-terrain traversal.
+
+`feet_slide` wraps G1's unchanged `mdp.feet_slide`: world XY foot speed without
+subtracting base velocity, contact-history threshold 1 N, and no upright gate.
+The TensorBoard reward tag is `Episode_Reward/feet_slide`; earlier runs using
+`feet_slippage` keep their old tag. The separate
+world-3D `feet_slippage_3d` term stays disabled. Gait pairs are FL-RR and FR-RL;
+its `std` directly divides squared timing errors, so use `0.1`, not `sqrt(0.1)`.
+Foot clearance retains its existing formula and target on discrete terrain.
+
+`feet_air_time` follows robot_lab's quadruped touchdown formula:
+`sum((last_air_time - 0.5) * first_contact)`. It uses all terrain categories,
+command norm above 0.1 (including yaw), and upright orientation. Longer completed
+swings contribute positively, shorter ones negatively; 0.5 s is a threshold,
+not a target duration. An airborne foot earns nothing until touchdown. This
+does not enforce diagonal timing or guarantee that all four feet participate.
 
 The ongoing cost is `sum(clamp((current_air_time - 0.6) / 0.4, 0, 1)**2)`:
 it starts after 0.6 s and saturates at 1 s. It requires a translation command
 above 0.1 m/s or yaw command above 0.2 rad/s, at least two supporting feet, and
 upright orientation. It reuses contact-sensor timers and their resets.
-Historical timing variance and experimental style functions remain available,
-with zero default weight. Tracking, foot-slide math, terrain, network and PPO
-are unchanged in this isolated reward comparison.
+Terrain, commands, network and PPO are unchanged; no AMP or phase input is added.
 
-The shared mask implementation remains available. Names are defined once in
-`env.terrain_masks.continuous_terrain_names`: flat, stairs, boxes, rough and slopes.
-Steppingstones, gaps, stakes, bridges and rails are excluded from the ongoing cost.
-The optional selector supports `continuous`, `discrete`, `known`, and `all`;
-`None` also disables gating. A nonzero weight is needed for a term to contribute.
-Masks use assigned curriculum columns and are cached across resets/level changes.
-They do not classify local footholds: a gap environment's spawn platform is discrete.
-Random continuous/discrete mixtures are unknown and excluded from both groups;
-homogeneous generators are classifiable. After manual runtime layout/list changes,
-call `clear_terrain_mask_cache(env)`.
+`Go2AMEEnvCfg.reward_gates` replaces the old `terrain_mask` arguments and module.
+The final reward is raw reward × base weight × scale × terrain × level × time × dt;
+existing command, upright, touchdown and support conditions remain inside the formula.
+Groups provide defaults and `overrides` merge individual fields per reward:
 
-Use the same checkpoint and seed for both branches, with fresh optimizer state:
+- `gait_guidance`: gait, mirror and hip deviation; all terrains at level <=5 and
+  iteration <3000 in stage 1, disabled in stage 2.
+- `air_contact`: touchdown air-time, variance and ongoing excess; all terrains in both stages.
+- `default_style`: remaining style terms, vertical/angular velocity and orientation;
+  default factors are 1. Base height is continuous-only, foot clearance discrete-only,
+  and vertical velocity uses 0.25 on discrete terrain (1 on unknown terrain).
 
-```powershell
-# B: default experimental reward, initially check after 500 PPO updates.
-.\run_train.ps1 --finetune_from logs/rsl_rl/go2_ame/2026-10-26_18-22-16_without_base-height-peneal/model_9999.pt --seed 42 --run_name air_excess_B --max_iterations 500
-# A: same command with a distinct name and the only reward difference below.
-.\run_train.ps1 --finetune_from logs/rsl_rl/go2_ame/2026-10-26_18-22-16_without_base-height-peneal/model_9999.pt --seed 42 --run_name air_excess_A --max_iterations 500 env.rewards.feet_air_time_excess_penalty.weight=0
+Each rule supports `scale`, `terrain_scales`, `max_level`, `above_level_scale`,
+`end_iteration` and `after_iteration_scale`. Missing override fields inherit;
+explicit `None` removes a level/time limit. Terrain dictionaries merge by key,
+and a named terrain takes precedence over its category. For example:
+
+```python
+self.reward_gates.groups["gait_guidance"].max_level = 5
+self.reward_gates.overrides["joint_mirror"] = {"end_iteration": 1500}
 ```
 
-Run branches sequentially on this single-GPU setup. Check per-foot contact and
-load participation, longest air phases, tracking and fixed-terrain traversal at
-0/100/300/500 updates. This is an inspection budget, not a convergence promise.
-Loading a checkpoint does not restore its old environment/reward configuration.
-Restart training for new defaults; `--finetune_from` initializes weights and
-resets optimizer/iteration, while `--resume` restores full training state.
-Decision evidence: `test/GO2_NEXT_STEP_20261029.md`; implementation validation:
-`test/AIR_EXCESS_ISOLATED_VALIDATION_20261029.md`. These bounded checks establish
-integration, not a proven improvement in foot participation or traversal.
+Hydra accepts `env.reward_gates.enabled=false` to set **all external factors to 1**;
+zero base weights remain off. This does not restore the previous terrain masks.
+The final configuration is saved in `env.yaml` and validated at environment startup,
+including inactive rewards. Old `terrain_mask`/`terrain_masks` settings are unsupported.
+
+Continuous names are configured in `reward_gates.continuous_terrain_names` (flat,
+stairs, boxes, rough and slopes). Curriculum classification follows generator column
+allocation, while levels are read dynamically. The spawn platform in a gap environment
+is still discrete. Random mixed types are unknown; homogeneous categories and single
+terrain names can be identified, but random row IDs are not difficulty levels.
+Plane terrain has level 0. Unknown levels disable level-limited terms; unknown
+categories disable the two height terms. Named terrain overrides still work when
+the exact name is known. Restart after changing terrain layouts or gate configuration.
+
+The Runner supplies its logged PPO iteration before each rollout. Resume uses the
+existing saved iteration convention (the saved index is reused); weights-only
+initialization resets to 0, and play uses checkpoint progress. No gate state enters
+model weights, and G1 tasks retain their behavior. TensorBoard `RewardGates/<term>/`
+records category/level/time/total factors, enabled fraction, base/effective weights,
+and weighted reward per second from the **last reward control step**, not an episode
+average; `RewardGates/last_control_step` identifies the sample. Logging is independent
+of AME diagnostics. Attention and gate values alone do not establish locomotion quality.
+
+For this stage-1 experiment, start a new run with `FINETUNE=False`:
+
+```powershell
+.\run_train.ps1 --seed 42 --run_name pure_rl_g1_paper
+```
+
+Keep older runs as controls. Evaluate fixed flat commands at 0.3, 0.5 and 0.8 m/s,
+per-foot load participation, longest air phases, diagonal timing, and fixed
+steppingstone/gap traversal. A higher gait reward alone does not establish success.
+This is a combined experiment, not a single-term causal ablation.
+New defaults require restarting the process; loading a checkpoint does not restore
+its old environment/reward settings. Stage 2 still requires initialization or resume.
 
 ## AME TensorBoard diagnostics
 
