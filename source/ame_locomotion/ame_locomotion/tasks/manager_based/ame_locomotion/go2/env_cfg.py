@@ -141,9 +141,12 @@ class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.debug_vis = False
 
+        # Reward Gate Configuration
+        self.reward_gates.groups["gait_guidance"].end_iteration = None
+
         # Reward weights: override Go2RewardsCfg defaults here for both stages.
         # -- task: command tracking
-        self.rewards.track_lin_vel_xy_exp.weight = 2.0
+        self.rewards.track_lin_vel_xy_exp.weight = 3.0
         self.rewards.track_ang_vel_z_exp.weight = 2.0
 
         # -- regulation: safety, energy and action smoothness
@@ -160,15 +163,15 @@ class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
 
         # -- gait style: posture, foot contacts and coordination
         self.rewards.base_height_l2.weight = 0.0
-        self.rewards.joint_deviation_hip_l1.weight = -0.0
-        self.rewards.joint_mirror.weight = 0.0
+        self.rewards.joint_deviation_hip_l1.weight = -0.1
+        self.rewards.joint_mirror.weight = -0.01
         self.rewards.feet_slide.weight = -0.1
         self.rewards.feet_slippage_3d.weight = 0.0
         self.rewards.feet_contact_forces.weight = 0.0
         self.rewards.feet_height_body.weight = -0.5
-        self.rewards.feet_gait.weight = 0.2
-        self.rewards.feet_air_time.weight = 0.25
-        self.rewards.feet_air_time_variance_penalty.weight = -0.1
+        self.rewards.feet_gait.weight = 0.5
+        self.rewards.feet_air_time.weight = 0.1
+        self.rewards.feet_air_time_variance_penalty.weight = -1.0
         self.rewards.feet_air_time_excess_penalty.weight = -0.1
         self.rewards.standing_joint_positions.weight = 0.0
         self.rewards.standing_joint_velocities.weight = 0.0
