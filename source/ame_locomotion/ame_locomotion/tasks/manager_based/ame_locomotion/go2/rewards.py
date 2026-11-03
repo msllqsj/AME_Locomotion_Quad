@@ -423,6 +423,14 @@ class FeetAirTimeExcessPenalty(ManagerTermBase):
         return apply_reward_gate(env, excess * supported * moving * upright, "feet_air_time_excess_penalty")
 
 
+def joint_position_penalty(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, stand_still_scale: float, velocity_threshold: float
+) -> torch.Tensor:
+    """Default-pose penalty controlled by the Go2 gait guidance gates."""
+    value = base_mdp.joint_position_penalty(env, asset_cfg, stand_still_scale, velocity_threshold)
+    return apply_reward_gate(env, value, "joint_pos")
+
+
 def standing_joint_position_error(
     env: ManagerBasedRLEnv,
     command_name: str,

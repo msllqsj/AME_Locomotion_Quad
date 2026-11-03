@@ -18,7 +18,7 @@ CONTINUOUS_TERRAINS = (
     "hf_pyramid_slope",
     "hf_pyramid_slope_inv",
 )
-GAIT_TERMS = ("feet_gait", "joint_mirror", "joint_deviation_hip_l1")
+GAIT_TERMS = ("feet_gait", "joint_mirror", "joint_deviation_hip_l1", "joint_pos")
 AIR_TERMS = ("feet_air_time", "feet_air_time_variance_penalty", "feet_air_time_excess_penalty")
 STYLE_TERMS = (
     "base_height_l2",

@@ -48,6 +48,15 @@ class Go2RewardsCfg:
     flat_orientation_l2 = RewTerm(func=r.flat_orientation_l2, weight=-0.2)
 
     # -- style: posture, foot contacts and coordination
+    joint_pos = RewTerm(
+        func=r.joint_position_penalty,
+        weight=-0.7,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stand_still_scale": 5.0,
+            "velocity_threshold": 0.3,
+        },
+    )
     # AME Table 2, ANYmal-D: vertical velocity and roll/pitch angular velocity.
 
     base_height_l2 = RewTerm(
