@@ -40,6 +40,7 @@ class RewardGateRuleCfg:
     scale: float = 1.0
     terrain_scales: dict[str, float] = {"continuous": 1.0, "discrete": 1.0, "unknown": 1.0}
     max_level: int | None = None
+    fade_end_level: int | None = None
     above_level_scale: float = 0.0
     end_iteration: int | None = None
     after_iteration_scale: float = 0.0
@@ -50,7 +51,7 @@ class RewardGatesCfg:
     enabled: bool = True
     continuous_terrain_names: tuple[str, ...] = CONTINUOUS_TERRAINS
     groups: dict[str, RewardGateRuleCfg] = {
-        "gait_guidance": RewardGateRuleCfg(max_level=5, end_iteration=3000),
+        "gait_guidance": RewardGateRuleCfg(max_level=None, fade_end_level=None, end_iteration=None),
         "air_contact": RewardGateRuleCfg(),
         "default_style": RewardGateRuleCfg(),
     }
@@ -146,10 +147,14 @@ class RewardGates:
             ):
                 if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                     raise ValueError("reward_gates coefficients must be finite and nonnegative.")
-            for name in ("max_level", "end_iteration"):
+            for name in ("max_level", "fade_end_level", "end_iteration"):
                 value = rule[name]
                 if value is not None and (type(value) is not int or value < 0):
                     raise ValueError(f"reward_gates.{name} must be a nonnegative integer or None.")
+            if rule["fade_end_level"] is not None and (
+                rule["max_level"] is None or rule["fade_end_level"] <= rule["max_level"]
+            ):
+                raise ValueError("reward_gates.fade_end_level must be greater than max_level.")
 
         groups = {name: _as_dict(rule) for name, rule in cfg.groups.items()}
         for rule in groups.values():
@@ -201,11 +206,15 @@ class RewardGates:
             scale = rule["scale"] if self.enabled else 1.0
             if self.enabled:
                 if rule["max_level"] is not None:
-                    level = (
-                        torch.where(levels <= rule["max_level"], 1.0, rule["above_level_scale"])
-                        if self.levels_known and levels is not None
-                        else torch.zeros_like(self._ones)
-                    )
+                    if not self.levels_known or levels is None:
+                        level = torch.zeros_like(self._ones)
+                    elif rule["fade_end_level"] is not None:
+                        progress = ((levels.float() - rule["max_level"]) / (
+                            rule["fade_end_level"] - rule["max_level"]
+                        )).clamp(0, 1)
+                        level = 1.0 + progress * (rule["above_level_scale"] - 1.0)
+                    else:
+                        level = torch.where(levels <= rule["max_level"], 1.0, rule["above_level_scale"])
                 if rule["end_iteration"] is not None and self.iteration >= rule["end_iteration"]:
                     time = rule["after_iteration_scale"]
             self._factors[name] = (category, level, time, category * level * time * scale)
