@@ -32,6 +32,7 @@ parser.add_argument("--video_length", type=int, default=300, help="Length of the
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
+parser.add_argument("--keyboard", action="store_true", help="Control velocity interactively with the keyboard.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default="AME-Go2-Play-v0", help="Name of the task.")
 parser.add_argument("--max_steps", type=int, default=None, help="Stop playback after this many control steps.")
@@ -60,6 +61,8 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.keyboard and (args_cli.headless or args_cli.manual_headless):
+    parser.error("--keyboard requires a visible simulator window; remove --headless/--manual_headless.")
 # always enable cameras to record video
 args_cli.enable_cameras = True
 if args_cli.video:
@@ -123,6 +126,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+
+    if args_cli.keyboard:
+        from keyboard_control import KeyboardVelocityCommand
+
+        env_cfg.scene.num_envs = 1
+        env_cfg.terminations.time_out = None
+        command_cfg = env_cfg.commands.base_velocity
+        command_cfg.class_type = KeyboardVelocityCommand
+        command_cfg.heading_command = False
+        command_cfg.ranges.heading = None
+        command_cfg.rel_heading_envs = 0.0
+        command_cfg.rel_standing_envs = 0.0
+        command_cfg.debug_vis = False
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here

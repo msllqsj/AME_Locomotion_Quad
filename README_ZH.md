@@ -61,6 +61,18 @@ python scripts/rsl_rl/play.py --num_envs 1 --checkpoint <Go2模型路径> --head
 # 或 .\run_play.ps1 --checkpoint <Go2模型路径>
 ```
 
+加 `--keyboard` 可在运行时控制速度（Go2/G1 均支持）：
+
+```powershell
+.\run_play.ps1 --checkpoint "D:\models\model_10000.pt" --keyboard --real-time
+```
+
+先点击仿真视口使其获得键盘焦点。键盘模式强制单环境并关闭时间超时，跌倒等其他终止条件仍然有效；不能与 `--headless` 同用。
+按住方向键上/下前进/后退，左/右横移，`Z/X` 转向，松开移动键后目标速度归零。
+`W/S` 增减前进速度倍率，`A/D` 增减横移倍率，`E/Q` 增减转向倍率，`R` 恢复初始倍率。
+三个倍率独立调整，每次变化 0.1，范围 0.1–2.0；初始速度为前进/横移 1 m/s、转向 1.57 rad/s。
+倍率键本身不会启动移动；终端会打印倍率及变化后的速度指令。键盘模式替代随机速度采样和航向控制，不受命令采样范围限制。
+
 视频写入模型目录的 `videos/play/`，注意力写入同目录的 `attention_weights.npy`。
 `--vis_attention` 与 `--save_attention_weights` 可以独立启用；`--max_steps` 可以限制无视频回放步数。
 
