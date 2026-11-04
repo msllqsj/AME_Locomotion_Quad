@@ -15,4 +15,5 @@ class Go2AMEPPORunnerCfg(AMEPPORunnerCfg):
     def __post_init__(self):
         self.experiment_name = stage_cfg.experiment_name()
         self.policy.map_scan_dim = stage_cfg.MAP_SCAN_DIM
+        # self.algorithm.num_mini_batches = 16 # TODO 4096 envs
         self.diagnostics.enabled = True

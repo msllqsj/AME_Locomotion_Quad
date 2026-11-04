@@ -162,7 +162,7 @@ class Go2AMEEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.flat_orientation_l2.weight = -0.2
 
         # -- gait style: posture, foot contacts and coordination
-        self.rewards.joint_pos.weight = -0.7
+        self.rewards.joint_pos.weight = -0.1
         self.rewards.base_height_l2.weight = 0.0
         self.rewards.joint_deviation_hip_l1.weight = -0.1
         self.rewards.joint_mirror.weight = -0.01

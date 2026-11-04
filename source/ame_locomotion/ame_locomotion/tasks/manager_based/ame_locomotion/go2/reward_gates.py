@@ -64,6 +64,7 @@ class RewardGatesCfg:
         "base_height_l2": {"terrain_scales": {"discrete": 0.0, "unknown": 0.0}},
         # "feet_height_body": {"terrain_scales": {"continuous": 0.0, "unknown": 0.0}},
         "lin_vel_z_l2": {"terrain_scales": {"discrete": 0.25}},
+        "joint_pos": {"terrain_scales": {"discrete": 0.1}} # TODO 
     }
 
 
